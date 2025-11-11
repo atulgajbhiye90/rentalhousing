@@ -101,6 +101,12 @@ df = df.dropna(subset=[price_col])
 features = [c for c in [city_col, ptype_col, furn_col, bed_col, bath_col, area_col] if c]
 target = price_col
 
+# Keep original values for form dropdowns
+original_values = {}
+for col in [city_col, ptype_col, furn_col]:
+    if col and df[col].dtype == "object":
+        original_values[col] = sorted(df[col].unique())
+
 df = df[features + [target]].copy()
 
 # Encode categorical columns
@@ -130,17 +136,17 @@ st.markdown("## 🧮 Predict House Rent (Manual Entry)")
 with st.form("manual_prediction"):
     col1, col2, col3 = st.columns(3)
     with col1:
-        if city_col:
-            city = st.selectbox("City", sorted(df[city_col].unique()))
+        if city_col and city_col in original_values:
+            city = st.selectbox("City", original_values[city_col])
         else:
             city = st.text_input("City (type manually)")
-        if ptype_col:
-            property_type = st.selectbox("Property Type", sorted(df[ptype_col].unique()))
+        if ptype_col and ptype_col in original_values:
+            property_type = st.selectbox("Property Type", original_values[ptype_col])
         else:
             property_type = st.text_input("Property Type")
     with col2:
-        if furn_col:
-            furnishing = st.selectbox("Furnishing", sorted(df[furn_col].unique()))
+        if furn_col and furn_col in original_values:
+            furnishing = st.selectbox("Furnishing", original_values[furn_col])
         else:
             furnishing = st.selectbox("Furnishing", ["Furnished", "Semi-Furnished", "Unfurnished"])
         bedrooms = st.number_input("Bedrooms", 1, 10, 2)
@@ -151,38 +157,69 @@ with st.form("manual_prediction"):
     submitted = st.form_submit_button("🔍 Predict Rent")
 
     if submitted:
-        # Prepare input for model using the exact feature order
-        input_data = {}
-        
-        # Add features in the same order as training
-        for feat in features:
-            if feat == city_col:
-                input_data[feat] = city
-            elif feat == ptype_col:
-                input_data[feat] = property_type
-            elif feat == furn_col:
-                input_data[feat] = furnishing
-            elif feat == bed_col:
-                input_data[feat] = bedrooms
-            elif feat == bath_col:
-                input_data[feat] = bathrooms
-            elif feat == area_col:
-                input_data[feat] = area
+        try:
+            # Build input row with proper values
+            input_row = []
+            
+            for feat in features:
+                if feat == city_col:
+                    if feat in encoders:
+                        val = str(city)
+                        if val in encoders[feat].classes_:
+                            input_row.append(encoders[feat].transform([val])[0])
+                        else:
+                            st.warning(f"City '{city}' not in training data. Using closest match.")
+                            input_row.append(0)
+                    else:
+                        input_row.append(city)
+                        
+                elif feat == ptype_col:
+                    if feat in encoders:
+                        val = str(property_type)
+                        if val in encoders[feat].classes_:
+                            input_row.append(encoders[feat].transform([val])[0])
+                        else:
+                            st.warning(f"Property type '{property_type}' not in training data.")
+                            input_row.append(0)
+                    else:
+                        input_row.append(property_type)
+                        
+                elif feat == furn_col:
+                    if feat in encoders:
+                        val = str(furnishing)
+                        if val in encoders[feat].classes_:
+                            input_row.append(encoders[feat].transform([val])[0])
+                        else:
+                            st.warning(f"Furnishing '{furnishing}' not in training data.")
+                            input_row.append(0)
+                    else:
+                        input_row.append(furnishing)
+                        
+                elif feat == bed_col:
+                    input_row.append(int(bedrooms))
+                elif feat == bath_col:
+                    input_row.append(int(bathrooms))
+                elif feat == area_col:
+                    input_row.append(float(area))
 
-        # Encode categorical inputs
-        for col, le in encoders.items():
-            if col in input_data:
-                val = str(input_data[col])
-                if val not in le.classes_:
-                    le.classes_ = np.append(le.classes_, val)
-                input_data[col] = le.transform([val])[0]
+            # Create input DataFrame with exact same structure as training data
+            input_df = pd.DataFrame([input_row], columns=features)
+            
+            # Ensure all numeric columns are proper numeric types
+            for col in input_df.columns:
+                if col in [bed_col, bath_col, area_col]:
+                    input_df[col] = pd.to_numeric(input_df[col], errors='coerce')
+            
+            prediction = model.predict(input_df)[0]
 
-        # Create DataFrame with correct column order
-        input_df = pd.DataFrame([input_data], columns=features)
-        prediction = model.predict(input_df)[0]
-
-        st.success(f"🏡 **Estimated Rent/Price: ₹{prediction:,.0f}**")
-        st.caption("This is a model-based estimate — actual prices may vary by area and amenities.")
+            st.success(f"🏡 **Estimated Rent/Price: ₹{prediction:,.0f}**")
+            st.caption("This is a model-based estimate — actual prices may vary by area and amenities.")
+            
+        except Exception as e:
+            st.error(f"Prediction error: {str(e)}")
+            st.write("Debug info:")
+            st.write(f"Features expected: {features}")
+            st.write(f"Input shape: {input_df.shape if 'input_df' in locals() else 'Not created'}")
 
 st.markdown("---")
 st.markdown("© 2025 Rental Price Prediction App — Powered by Streamlit & scikit-learn")
