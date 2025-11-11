@@ -7,226 +7,174 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_absolute_error
 
-st.set_page_config(page_title="Rental Property Analysis", layout="wide")
+st.set_page_config(page_title="🏠 Rental Property Analysis - India", layout="wide")
 sns.set(style="whitegrid")
 
 # -------------------------
-# Helpers: read uploaded or repo file
+# Helper functions
 # -------------------------
 @st.cache_data
 def load_from_bytes(bytes_data: bytes, filename: str) -> pd.DataFrame:
-    """Read an uploaded Excel/CSV file from bytes and return a DataFrame."""
-    if not filename or bytes_data is None:
-        return pd.DataFrame()
+    """Read uploaded Excel/CSV file."""
     name = filename.lower()
     bio = BytesIO(bytes_data)
     try:
         if name.endswith(".csv"):
             return pd.read_csv(bio)
         elif name.endswith(".xls"):
-            # requires xlrd==1.2.0 in requirements.txt for .xls
             return pd.read_excel(bio, engine="xlrd")
         elif name.endswith(".xlsx"):
             return pd.read_excel(bio, engine="openpyxl")
-        else:
-            # fallback: let pandas try to infer
-            return pd.read_excel(bio)
     except Exception as e:
-        st.error(f"Could not read uploaded file `{filename}`: {e}")
-        return pd.DataFrame()
+        st.error(f"Error reading file: {e}")
+    return pd.DataFrame()
 
 @st.cache_data
 def load_repo_dataset() -> pd.DataFrame:
-    """Try loading dataset from the repository root with several fallbacks."""
-    candidates = [
+    """Load default dataset from repo."""
+    for fname, engine in [
         ("rental_property_dataset_india.xls", "xlrd"),
         ("rental_property_dataset_india.xlsx", "openpyxl"),
         ("rental_property_dataset_india.csv", None),
-    ]
-    for fname, engine in candidates:
+    ]:
         try:
             if fname.endswith(".csv"):
-                df = pd.read_csv(fname)
+                return pd.read_csv(fname)
             elif engine:
-                df = pd.read_excel(fname, engine=engine)
+                return pd.read_excel(fname, engine=engine)
             else:
-                df = pd.read_excel(fname)
-            st.sidebar.success(f"Loaded repo dataset: {fname}")
-            return df
+                return pd.read_excel(fname)
         except Exception:
             continue
     return pd.DataFrame()
 
+def encode_data(df, target_col):
+    """Encode categorical columns for modeling."""
+    df = df.copy()
+    le_dict = {}
+    for col in df.select_dtypes(include=["object"]).columns:
+        le = LabelEncoder()
+        df[col] = le.fit_transform(df[col].astype(str))
+        le_dict[col] = le
+    return df, le_dict
+
 # -------------------------
-# Sidebar: file uploader + options
+# Sidebar - dataset upload
 # -------------------------
-st.sidebar.header("Dataset")
+st.sidebar.header("📂 Dataset")
 uploaded_file = st.sidebar.file_uploader(
-    "Upload a dataset (.xls, .xlsx, .csv) — optional",
-    type=["xls", "xlsx", "csv"],
-    help="Uploaded file will be used for this session only. If not uploaded, the bundled repo dataset will be used."
+    "Upload dataset (.xls, .xlsx, .csv)", type=["xls", "xlsx", "csv"]
 )
 
-df = pd.DataFrame()
 if uploaded_file is not None:
-    file_bytes = uploaded_file.read()
-    st.sidebar.success(f"Uploaded: {uploaded_file.name} ({len(file_bytes):,} bytes)")
-    df = load_from_bytes(file_bytes, uploaded_file.name)
+    df = load_from_bytes(uploaded_file.read(), uploaded_file.name)
 else:
     df = load_repo_dataset()
 
-if df is None or df.empty:
-    st.sidebar.warning("No dataset found. Upload a dataset or add one to the repo root as rental_property_dataset_india.xls/.xlsx/.csv")
-    st.title("Rental Property — No dataset")
-    st.write("Please upload a dataset using the sidebar uploader or add a dataset file to the repository root.")
+if df.empty:
+    st.error("❌ No dataset found. Upload one or include it in the repo.")
     st.stop()
 
-# -------------------------
-# Basic info & preview
-# -------------------------
-st.title("🏠 Rental Property — Quick Analysis")
-st.write(f"Using dataset with **{df.shape[0]:,} rows** and **{df.shape[1]:,} columns**.")
-st.subheader("Columns")
-st.write(df.columns.tolist())
-
-st.subheader("Preview (first 20 rows)")
-st.dataframe(df.head(20))
+st.title("🏠 Rental Property Market Analysis - India")
+st.write(f"Loaded dataset with **{df.shape[0]:,} rows** and **{df.shape[1]} columns**")
 
 # -------------------------
-# Quick cleaning: normalize column names
+# Data Overview
 # -------------------------
-def normalize_cols(df_):
-    df = df_.copy()
-    df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
-    return df
+st.subheader("📊 Dataset Preview")
+st.dataframe(df.head(10))
+st.write("Columns:", list(df.columns))
 
-df = normalize_cols(df)
+# Detect potential target column
+target_candidates = [c for c in df.columns if "price" in c.lower() or "rent" in c.lower()]
+target = st.selectbox("Select Target Column (Price/Rent)", target_candidates)
 
-# -------------------------
-# Identify numeric columns and target candidates
-# -------------------------
+# Clean numeric & categorical columns
 num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-target_candidates = [c for c in df.columns if "price" in c.lower() or "rent" in c.lower() or "price_per" in c.lower()]
-if not target_candidates:
-    # fallback: if there's a numeric column named 'price' or 'rent'
-    for opt in ["price", "rent", "rent_per_sqft", "price_per_sqft"]:
-        if opt in df.columns:
-            target_candidates.append(opt)
+cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
 
 # -------------------------
-# Filters (sidebar)
+# Quick visualization
 # -------------------------
-st.sidebar.header("Filters")
-filters = {}
-if "city" in df.columns:
-    cities = ["All"] + sorted(df["city"].dropna().astype(str).unique().tolist())
-    sel_city = st.sidebar.selectbox("City", cities)
-    if sel_city != "All":
-        filters["city"] = sel_city
-
-if "property_type" in df.columns:
-    types = ["All"] + sorted(df["property_type"].dropna().astype(str).unique().tolist())
-    sel_type = st.sidebar.selectbox("Property type", types)
-    if sel_type != "All":
-        filters["property_type"] = sel_type
-
-# Additional numeric range filter example: area
-if "area" in df.columns and pd.api.types.is_numeric_dtype(df["area"]):
-    min_area = int(df["area"].min(skipna=True)) if not np.isnan(df["area"].min(skipna=True)) else 0
-    max_area = int(df["area"].max(skipna=True)) if not np.isnan(df["area"].max(skipna=True)) else 0
-    if min_area < max_area:
-        r = st.sidebar.slider("Area range", min_area, max_area, (min_area, max_area))
-        filters["area_range"] = r
-
-# apply filters
-filtered = df.copy()
-for k, v in filters.items():
-    if k == "area_range":
-        lo, hi = v
-        filtered = filtered[(filtered["area"] >= lo) & (filtered["area"] <= hi)]
-    else:
-        filtered = filtered[filtered[k] == v]
-
-st.subheader("Filtered sample")
-st.write(f"{filtered.shape[0]:,} rows after filters")
-st.dataframe(filtered.head(50))
+if target:
+    st.subheader(f"📈 Distribution of {target}")
+    fig, ax = plt.subplots()
+    sns.histplot(df[target], kde=True, ax=ax)
+    st.pyplot(fig)
 
 # -------------------------
-# Numeric summary & plots
+# Train simple model
 # -------------------------
-st.subheader("Numeric summary")
-if num_cols:
-    st.write(filtered[num_cols].describe())
-else:
-    st.write("No numeric columns detected.")
+st.subheader("🤖 Model Training")
+if target:
+    st.write("Training model to predict:", target)
+    df_encoded, le_dict = encode_data(df, target)
+    X = df_encoded.drop(columns=[target])
+    y = df_encoded[target]
 
-# Distribution plot for chosen target (if exists)
-if target_candidates:
-    target = st.selectbox("Choose a target column for distribution / modeling", target_candidates)
-    if target in filtered.columns:
-        st.subheader(f"Distribution of `{target}`")
-        fig, ax = plt.subplots()
-        sns.histplot(filtered[target].dropna(), kde=True, ax=ax)
-        ax.set_xlabel(target)
-        st.pyplot(fig)
-else:
-    st.info("No target-like columns (price/rent) detected. The automatic model demo will be disabled.")
-
-# Scatter: price vs area if both exist
-if ("area" in filtered.columns) and target_candidates and (target in filtered.columns) and pd.api.types.is_numeric_dtype(filtered["area"]):
-    st.subheader(f"{target} vs area")
-    fig2, ax2 = plt.subplots()
-    ax2.scatter(filtered["area"].dropna(), filtered[target].loc[filtered["area"].dropna().index], alpha=0.6)
-    ax2.set_xlabel("area")
-    ax2.set_ylabel(target)
-    st.pyplot(fig2)
-
-# Correlation heatmap (small subset for speed)
-st.subheader("Correlation (numeric columns)")
-if len(num_cols) >= 2:
-    corr = filtered[num_cols].corr()
-    fig3, ax3 = plt.subplots(figsize=(6, 4))
-    sns.heatmap(corr, annot=True, fmt=".2f", ax=ax3)
-    st.pyplot(fig3)
-else:
-    st.write("Not enough numeric columns for correlation matrix.")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    mae = mean_absolute_error(y_test, preds)
+    st.success(f"✅ Model trained successfully! MAE: {mae:.2f}")
 
 # -------------------------
-# Quick model: predict target using numeric features
+# Manual prediction input form
 # -------------------------
-st.subheader("Quick model: predict price (toy example)")
-if target_candidates and (target in filtered.columns):
-    # choose numeric features automatically (exclude target)
-    X_all = filtered.select_dtypes(include=[np.number]).copy()
-    if target in X_all.columns:
-        X_all = X_all.drop(columns=[target], errors="ignore")
-    y_all = filtered[target].dropna()
-    X_all = X_all.loc[y_all.index]  # align
+st.subheader("🏡 Predict Rent/Price for New Property (Manual Input)")
 
-    if X_all.shape[0] >= 50 and X_all.shape[1] >= 1:
-        # allow user to adjust model params
-        st.sidebar.header("Model options")
-        n_estimators = st.sidebar.slider("RandomForest n_estimators", 10, 200, 50)
-        test_size = st.sidebar.slider("Test set %", 10, 50, 20) / 100.0
+with st.form("prediction_form"):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        city = st.selectbox("City", sorted(df["city"].dropna().unique()))
+        property_type = st.selectbox("Property Type", sorted(df["property_type"].dropna().unique()))
+    with col2:
+        furnishing = st.selectbox(
+            "Furnishing", sorted(df["furnishing"].dropna().unique())
+            if "furnishing" in df.columns else ["Furnished", "Semi-Furnished", "Unfurnished"]
+        )
+        bedrooms = st.number_input("Bedrooms", min_value=1, max_value=10, value=2)
+    with col3:
+        bathrooms = st.number_input("Bathrooms", min_value=1, max_value=10, value=2)
+        area = st.number_input("Area (sqft)", min_value=100, max_value=10000, value=1000)
+    
+    submitted = st.form_submit_button("🔍 Predict Rent/Price")
 
-        X_train, X_test, y_train, y_test = train_test_split(X_all, y_all, test_size=test_size, random_state=42)
-        model = RandomForestRegressor(n_estimators=n_estimators, random_state=42)
-        with st.spinner("Training model..."):
-            model.fit(X_train, y_train)
-        preds = model.predict(X_test)
-        mae = mean_absolute_error(y_test, preds)
-        st.write(f"Trained RandomForestRegressor. MAE: **{mae:.2f}** on test set ({X_test.shape[0]} rows).")
+if submitted:
+    # Prepare single-row DataFrame
+    input_dict = {
+        "city": [city],
+        "property_type": [property_type],
+        "furnishing": [furnishing],
+        "bedrooms": [bedrooms],
+        "bathrooms": [bathrooms],
+        "area": [area],
+    }
 
-        # feature importances
-        fi = pd.Series(model.feature_importances_, index=X_all.columns).sort_values(ascending=False).head(20)
-        st.subheader("Feature importances (top 20)")
-        st.bar_chart(fi)
-    else:
-        st.info("Not enough numeric data to train the example model (need >=50 rows and at least 1 numeric feature).")
-else:
-    st.info("No price/rent-like target detected; quick model disabled.")
+    input_df = pd.DataFrame(input_dict)
 
+    # Ensure all model columns exist
+    for col in X.columns:
+        if col not in input_df.columns:
+            input_df[col] = 0  # default for missing
+
+    # Encode using same encoders
+    for col, le in le_dict.items():
+        if col in input_df.columns:
+            input_df[col] = le.transform(input_df[col].astype(str))
+
+    # Predict
+    prediction = model.predict(input_df[X.columns])[0]
+    st.success(f"💰 **Predicted {target}: ₹{prediction:,.0f}**")
+
+# -------------------------
+# Footer
+# -------------------------
 st.markdown("---")
-st.write("Tips: convert `.xls` to `.xlsx` or `.csv` to avoid needing an older `xlrd` package. Uploaded files live only for the session; persist elsewhere if needed.")
+st.write("Made with ❤️ using Streamlit | Data Source: Rental Property Dataset (India)")
