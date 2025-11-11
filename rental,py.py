@@ -151,24 +151,34 @@ with st.form("manual_prediction"):
     submitted = st.form_submit_button("🔍 Predict Rent")
 
     if submitted:
-        # Prepare input for model
-        input_data = {
-            city_col: city if city_col else "",
-            ptype_col: property_type if ptype_col else "",
-            furn_col: furnishing if furn_col else "",
-            bed_col: bedrooms,
-            bath_col: bathrooms,
-            area_col: area,
-        }
+        # Prepare input for model using the exact feature order
+        input_data = {}
+        
+        # Add features in the same order as training
+        for feat in features:
+            if feat == city_col:
+                input_data[feat] = city
+            elif feat == ptype_col:
+                input_data[feat] = property_type
+            elif feat == furn_col:
+                input_data[feat] = furnishing
+            elif feat == bed_col:
+                input_data[feat] = bedrooms
+            elif feat == bath_col:
+                input_data[feat] = bathrooms
+            elif feat == area_col:
+                input_data[feat] = area
 
         # Encode categorical inputs
         for col, le in encoders.items():
-            val = str(input_data[col])
-            if val not in le.classes_:
-                le.classes_ = np.append(le.classes_, val)
-            input_data[col] = le.transform([val])[0]
+            if col in input_data:
+                val = str(input_data[col])
+                if val not in le.classes_:
+                    le.classes_ = np.append(le.classes_, val)
+                input_data[col] = le.transform([val])[0]
 
-        input_df = pd.DataFrame([input_data])
+        # Create DataFrame with correct column order
+        input_df = pd.DataFrame([input_data], columns=features)
         prediction = model.predict(input_df)[0]
 
         st.success(f"🏡 **Estimated Rent/Price: ₹{prediction:,.0f}**")
