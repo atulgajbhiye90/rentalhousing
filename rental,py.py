@@ -97,14 +97,15 @@ if not price_col:
 # --------------------------------------------
 # Data Preprocessing
 # --------------------------------------------
+df_original = df.copy()
 df = df.dropna(subset=[price_col])
 features = [c for c in [city_col, ptype_col, furn_col, bed_col, bath_col, area_col] if c]
 target = price_col
 
-# Keep original values for form dropdowns
+# Store original categorical values for dropdowns
 original_values = {}
 for col in [city_col, ptype_col, furn_col]:
-    if col and df[col].dtype == "object":
+    if col and col in df.columns and df[col].dtype == "object":
         original_values[col] = sorted(df[col].unique())
 
 df = df[features + [target]].copy()
@@ -128,6 +129,9 @@ model.fit(X_train, y_train)
 preds = model.predict(X_test)
 mae = mean_absolute_error(y_test, preds)
 st.success(f"✅ Model trained successfully — MAE: {mae:,.2f}")
+
+# Store training feature names for validation
+training_features = list(X_train.columns)
 
 # --------------------------------------------
 # Manual Prediction Form
@@ -158,68 +162,75 @@ with st.form("manual_prediction"):
 
     if submitted:
         try:
-            # Build input row with proper values
-            input_row = []
+            # Create a dictionary matching the exact training features
+            input_dict = {}
             
-            for feat in features:
+            for feat in training_features:
                 if feat == city_col:
                     if feat in encoders:
                         val = str(city)
                         if val in encoders[feat].classes_:
-                            input_row.append(encoders[feat].transform([val])[0])
+                            input_dict[feat] = encoders[feat].transform([val])[0]
                         else:
-                            st.warning(f"City '{city}' not in training data. Using closest match.")
-                            input_row.append(0)
+                            st.warning(f"⚠️ City '{city}' not in training data. Using average.")
+                            input_dict[feat] = 0
                     else:
-                        input_row.append(city)
+                        input_dict[feat] = city
                         
                 elif feat == ptype_col:
                     if feat in encoders:
                         val = str(property_type)
                         if val in encoders[feat].classes_:
-                            input_row.append(encoders[feat].transform([val])[0])
+                            input_dict[feat] = encoders[feat].transform([val])[0]
                         else:
-                            st.warning(f"Property type '{property_type}' not in training data.")
-                            input_row.append(0)
+                            st.warning(f"⚠️ Property type '{property_type}' not in training data. Using average.")
+                            input_dict[feat] = 0
                     else:
-                        input_row.append(property_type)
+                        input_dict[feat] = property_type
                         
                 elif feat == furn_col:
                     if feat in encoders:
                         val = str(furnishing)
                         if val in encoders[feat].classes_:
-                            input_row.append(encoders[feat].transform([val])[0])
+                            input_dict[feat] = encoders[feat].transform([val])[0]
                         else:
-                            st.warning(f"Furnishing '{furnishing}' not in training data.")
-                            input_row.append(0)
+                            st.warning(f"⚠️ Furnishing '{furnishing}' not in training data. Using average.")
+                            input_dict[feat] = 0
                     else:
-                        input_row.append(furnishing)
+                        input_dict[feat] = furnishing
                         
                 elif feat == bed_col:
-                    input_row.append(int(bedrooms))
+                    input_dict[feat] = int(bedrooms)
                 elif feat == bath_col:
-                    input_row.append(int(bathrooms))
+                    input_dict[feat] = int(bathrooms)
                 elif feat == area_col:
-                    input_row.append(float(area))
+                    input_dict[feat] = float(area)
 
-            # Create input DataFrame with exact same structure as training data
-            input_df = pd.DataFrame([input_row], columns=features)
+            # Create DataFrame with exact column order and types as training data
+            input_df = pd.DataFrame([input_dict])
             
-            # Ensure all numeric columns are proper numeric types
+            # Ensure column order matches training data exactly
+            input_df = input_df[training_features]
+            
+            # Convert to the same dtypes as training data
             for col in input_df.columns:
-                if col in [bed_col, bath_col, area_col]:
-                    input_df[col] = pd.to_numeric(input_df[col], errors='coerce')
+                input_df[col] = input_df[col].astype(X_train[col].dtype)
             
+            # Make prediction
             prediction = model.predict(input_df)[0]
 
             st.success(f"🏡 **Estimated Rent/Price: ₹{prediction:,.0f}**")
             st.caption("This is a model-based estimate — actual prices may vary by area and amenities.")
             
         except Exception as e:
-            st.error(f"Prediction error: {str(e)}")
-            st.write("Debug info:")
-            st.write(f"Features expected: {features}")
-            st.write(f"Input shape: {input_df.shape if 'input_df' in locals() else 'Not created'}")
+            st.error(f"❌ Prediction error: {str(e)}")
+            with st.expander("🔍 Debug Information"):
+                st.write("**Training features:**", training_features)
+                st.write("**Training dtypes:**", dict(X_train.dtypes))
+                if 'input_df' in locals():
+                    st.write("**Input features:**", list(input_df.columns))
+                    st.write("**Input dtypes:**", dict(input_df.dtypes))
+                    st.write("**Input values:**", input_df.to_dict('records'))
 
 st.markdown("---")
 st.markdown("© 2025 Rental Price Prediction App — Powered by Streamlit & scikit-learn")
